@@ -270,23 +270,45 @@ pub const Evaluator = struct {
     }
 };
 
-test "Hand Eval init" {
-    var da = std.heap.DebugAllocator(.{}){};
-    const allocator = da.allocator();
-
-    defer _ = da.deinit();
+test "Poker Hand Correctness" {
+    const allocator = std.testing.allocator;
     var eval = try Evaluator.init(allocator);
     defer eval.deinit();
-}
 
-test "CAN EVAL" {
-    var da = std.heap.DebugAllocator(.{}){};
-    const allocator = da.allocator();
+    // 1. Royal Flush vs Straight Flush
+    // Royal: As Ks Qs Js Ts + garbage
+    const royal = [_]u32{ Card.makeCard(12, 0), Card.makeCard(11, 0), Card.makeCard(10, 0), Card.makeCard(9, 0), Card.makeCard(8, 0), Card.makeCard(2, 1), Card.makeCard(3, 2) };
 
-    defer _ = da.deinit();
-    var eval = try Evaluator.init(allocator);
-    defer eval.deinit();
-    const deck = Card.makeDeck();
-    const hand: [7]u32 = .{ deck[0], deck[1], deck[2], deck[3], deck[4], deck[5], deck[6] };
-    _ = eval.handStrength(hand);
+    // StrFlush: 9s 8s 7s 6s 5s + garbage
+    const s_flush = [_]u32{ Card.makeCard(9, 0), Card.makeCard(8, 0), Card.makeCard(7, 0), Card.makeCard(6, 0), Card.makeCard(5, 0), Card.makeCard(12, 1), Card.makeCard(12, 2) };
+
+    try std.testing.expect(eval.handStrength(royal) > eval.handStrength(s_flush));
+
+    // 2. Quads vs Full House
+    const quads = [_]u32{ Card.makeCard(5, 0), Card.makeCard(5, 1), Card.makeCard(5, 2), Card.makeCard(5, 3), Card.makeCard(12, 0), Card.makeCard(2, 0), Card.makeCard(3, 0) };
+    const boat = [_]u32{ Card.makeCard(12, 0), Card.makeCard(12, 1), Card.makeCard(12, 2), Card.makeCard(11, 0), Card.makeCard(11, 1), Card.makeCard(2, 0), Card.makeCard(3, 0) };
+
+    try std.testing.expect(eval.handStrength(quads) > eval.handStrength(boat));
+
+    // 3. The "Wheel" (A-2-3-4-5)
+    const wheel = [_]u32{ Card.makeCard(12, 0), Card.makeCard(0, 1), Card.makeCard(1, 2), Card.makeCard(2, 3), Card.makeCard(3, 0), Card.makeCard(11, 1), Card.makeCard(11, 2) };
+    const pair_aces = [_]u32{ Card.makeCard(12, 0), Card.makeCard(12, 1), Card.makeCard(8, 2), Card.makeCard(7, 3), Card.makeCard(4, 0), Card.makeCard(2, 1), Card.makeCard(2, 2) };
+
+    try std.testing.expect(eval.handStrength(wheel) > eval.handStrength(pair_aces));
+
+    // 4. Kicker Test (Equal Two Pair)
+    // Board: K K 8 8 4
+    const board = [_]u32{ Card.makeCard(11, 0), Card.makeCard(11, 1), Card.makeCard(6, 2), Card.makeCard(6, 3), Card.makeCard(2, 0) };
+
+    var p1_hand: [7]u32 = undefined;
+    @memcpy(p1_hand[0..5], board[0..]);
+    p1_hand[5] = Card.makeCard(12, 1); // Ace
+    p1_hand[6] = Card.makeCard(0, 1); // 2
+
+    var p2_hand: [7]u32 = undefined;
+    @memcpy(p2_hand[0..5], board[0..]);
+    p2_hand[5] = Card.makeCard(10, 1); // Queen
+    p2_hand[6] = Card.makeCard(0, 2); // 2
+
+    try std.testing.expect(eval.handStrength(p1_hand) > eval.handStrength(p2_hand));
 }
