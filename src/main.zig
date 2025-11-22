@@ -2,6 +2,24 @@ const std = @import("std");
 const Evaluator = @import("evaluator.zig").Evaluator;
 const Card = @import("card.zig");
 const print = std.debug.print;
+
+pub fn printTableStats(unsuited: []u32, flush: []u32) void {
+    const mem_bytes = @as(usize, unsuited.len) * @sizeOf(u32) + @as(usize, flush.len) * @sizeOf(u32);
+    std.debug.print("unsuited.len = {d}, flush.len = {d}, estimated bytes = {d}\n", .{ unsuited.len, flush.len, mem_bytes });
+
+    var nonzero: usize = 0;
+    for (unsuited) |v| {
+        if (v != 0) nonzero += 1;
+    }
+    std.debug.print("unsuited nonzero entries = {d} ({d} bytes)\n", .{ nonzero, nonzero * @sizeOf(u32) });
+
+    var f_nonzero: usize = 0;
+    for (flush) |v| {
+        if (v != 0) f_nonzero += 1;
+    }
+    std.debug.print("flush nonzero entries = {d} ({d} bytes)\n", .{ f_nonzero, f_nonzero * @sizeOf(u32) });
+}
+
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -42,4 +60,6 @@ pub fn main() !void {
     print("Evaluated {d} hands in {d:.4} seconds\n", .{ NUM_HANDS, seconds });
     print("Speed: {d:.2} million hands/sec\n", .{hands_per_sec / 1_000_000.0});
     print("just printing this so that it doesn't remove loop: {d}\n", .{total_score});
+    //printTableStats(unsuited: []u32, flush: []u32)
+    printTableStats(eval.unsuited_table, eval.flush_table);
 }

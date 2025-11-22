@@ -89,8 +89,6 @@ pub fn main() !void {
 
 * To achieve the stated performance metrics, you **must** build with optimizations enabled. Debug builds include safety checks that significantly slow down bitwise operations.
 
-* I also have two bash scripts `rundebug.sh` and `runrelease.sh` that will build and run program in release or debug for you or you can compile in the standard way with zig build by doing the following:
-
 ```bash
 # Run the benchmark/main example
 zig build run -Doptimize=ReleaseFast
