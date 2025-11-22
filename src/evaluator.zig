@@ -11,32 +11,46 @@ const FULL_HOUSE_BASE: u32 = 7;
 const FOUR_OF_A_KIND_BASE: u32 = 8;
 const STRAIGHT_FLUSH_BASE: u32 = 9;
 
+// Max prime product is 41^4 * 37 = 104,553,157 (Quads Aces w/ King kicker)
+// We round up to a safe buffer size.
+// MEMORY USAGE: ~105M * 4 bytes = ~420 MB
+const MAX_PRIME_PRODUCT = 105_000_000;
+
+// Max bitmask for ranks (13 bits) fits easily in u16 (65536)
+const MAX_FLUSH_KEY = 65536;
+
 pub const Evaluator = struct {
     const Self = @This();
     allocator: std.mem.Allocator,
-    flush_lookup: std.AutoHashMap(u16, u32),
-    unsuited_lookup: std.AutoHashMap(u32, u32),
+
+    // Replaced HashMaps with massive Direct Lookup Arrays
+    // 420MB for unsuited, 256KB for flushes.
+    flush_table: []u32,
+    unsuited_table: []u32,
 
     pub fn init(allocator: std.mem.Allocator) !Self {
         var self = Self{
             .allocator = allocator,
-            .flush_lookup = std.AutoHashMap(u16, u32).init(allocator),
-            .unsuited_lookup = std.AutoHashMap(u32, u32).init(allocator),
+            // Allocate the big buffers
+            .flush_table = try allocator.alloc(u32, MAX_FLUSH_KEY),
+            .unsuited_table = try allocator.alloc(u32, MAX_PRIME_PRODUCT),
         };
 
-        try self.flush_lookup.ensureTotalCapacity(1287);
-        try self.unsuited_lookup.ensureTotalCapacity(4900);
+        // Initialize with 0 (Invalid/Empty)
+        @memset(self.flush_table, 0);
+        @memset(self.unsuited_table, 0);
+
         try self.generateTables();
 
         return self;
     }
 
     pub fn deinit(self: *Self) void {
-        self.flush_lookup.deinit();
-        self.unsuited_lookup.deinit();
+        self.allocator.free(self.flush_table);
+        self.allocator.free(self.unsuited_table);
     }
 
-    pub fn handStrength(self: *Self, hand: [7]u32) u32 {
+    pub fn handStrength(self: *const Self, hand: [7]u32) u32 {
         var ranks: u16 = 0;
         var suit_ranks = [4]u16{ 0, 0, 0, 0 };
         var suit_counts = [4]u8{ 0, 0, 0, 0 };
@@ -45,6 +59,7 @@ pub const Evaluator = struct {
             const r = (card >> 8) & 0xF;
             const s = (card >> 12) & 0xF;
 
+            // Map 1,2,4,8 to 0,1,2,3
             const s_idx: u32 = switch (s) {
                 1 => 0,
                 2 => 1,
@@ -59,35 +74,31 @@ pub const Evaluator = struct {
             suit_counts[s_idx] += 1;
         }
 
+        // 1. Check Flush
         inline for (suit_counts, 0..) |count, i| {
             if (count >= 5) {
                 var flush_bits = suit_ranks[i];
+                // Reduce to top 5 bits if we have 6 or 7 suited cards
                 while (@popCount(flush_bits) > 5) {
                     const lowest_bit = flush_bits & (~flush_bits +% 1);
                     flush_bits ^= lowest_bit;
                 }
 
-                if (self.flush_lookup.get(flush_bits)) |val| {
-                    if (val > STRAIGHT_BASE << 20) {
-                        return val;
-                    }
+                // Direct Array Lookup
+                const val = self.flush_table[flush_bits];
+                if (val != 0) {
+                    if (val > STRAIGHT_BASE << 20) return val; // Straight flush
                     return (FLUSH_BASE << 26) | val;
                 }
                 return (FLUSH_BASE << 26) | flush_bits;
             }
         }
 
+        // 2. Check Straights
         const straights = [_]u16{
-            0b1111100000000,
-            0b0111110000000,
-            0b0011111000000,
-            0b0001111100000,
-            0b0000111110000,
-            0b0000011111000,
-            0b0000001111100,
-            0b0000000111110,
-            0b0000000011111,
-            0b1000000001111,
+            0b1111100000000, 0b0111110000000, 0b0011111000000, 0b0001111100000,
+            0b0000111110000, 0b0000011111000, 0b0000001111100, 0b0000000111110,
+            0b0000000011111, 0b1000000001111,
         };
 
         for (straights, 0..) |mask, i| {
@@ -97,8 +108,18 @@ pub const Evaluator = struct {
             }
         }
 
+        // 3. High Card Fast Path
+        // If we have 7 distinct ranks and no straight/flush, best is High Card.
+        if (@popCount(ranks) == 7) {
+            // We can fall through to the loop safely.
+            // Optimizing this specific branch requires complex bit manipulation
+            // that isn't worth it given how fast the loop below is now.
+        }
+
+        // 4. Check Unsuited (Pairs, etc)
         var max_val: u32 = 0;
 
+        // Permutations of 5 cards out of 7
         const PERMS = [21][5]u8{
             .{ 0, 1, 2, 3, 4 }, .{ 0, 1, 2, 3, 5 }, .{ 0, 1, 2, 3, 6 },
             .{ 0, 1, 2, 4, 5 }, .{ 0, 1, 2, 4, 6 }, .{ 0, 1, 2, 5, 6 },
@@ -118,65 +139,68 @@ pub const Evaluator = struct {
 
             const prod = p0 * p1 * p2 * p3 * p4;
 
-            if (self.unsuited_lookup.get(prod)) |val| {
-                if (val > max_val) max_val = val;
-            }
+            // DIRECT ARRAY LOOKUP (Zero Overhead)
+            const val = self.unsuited_table[prod];
+            if (val > max_val) max_val = val;
         }
 
         return max_val;
     }
 
+    fn addUnsuited(self: *Self, prod: u32, val: u32) void {
+        // Safety check just in case
+        if (prod >= self.unsuited_table.len) {
+            std.debug.print("ERROR: Product {d} exceeds table size\n", .{prod});
+            return;
+        }
+        self.unsuited_table[prod] = val;
+    }
+
     fn generateTables(self: *Self) !void {
         const primes = Card.PRIMES;
-
         const straights = [_][5]u8{
-            .{ 12, 0, 1, 2, 3 },
-            .{ 0, 1, 2, 3, 4 },
-            .{ 1, 2, 3, 4, 5 },
-            .{ 2, 3, 4, 5, 6 },
-            .{ 3, 4, 5, 6, 7 },
-            .{ 4, 5, 6, 7, 8 },
-            .{ 5, 6, 7, 8, 9 },
-            .{ 6, 7, 8, 9, 10 },
-            .{ 7, 8, 9, 10, 11 },
+            .{ 12, 0, 1, 2, 3 },   .{ 0, 1, 2, 3, 4 },  .{ 1, 2, 3, 4, 5 },
+            .{ 2, 3, 4, 5, 6 },    .{ 3, 4, 5, 6, 7 },  .{ 4, 5, 6, 7, 8 },
+            .{ 5, 6, 7, 8, 9 },    .{ 6, 7, 8, 9, 10 }, .{ 7, 8, 9, 10, 11 },
             .{ 8, 9, 10, 11, 12 },
         };
-
         for (straights, 0..) |s, i| {
             var mask: u16 = 0;
             for (s) |r| mask |= @as(u16, 1) << @intCast(r);
-
             const val = @as(u32, @intCast(i)) + 1;
-            try self.flush_lookup.put(mask, (STRAIGHT_FLUSH_BASE << 26) | val);
+            self.flush_table[mask] = (STRAIGHT_FLUSH_BASE << 26) | val;
         }
 
         var rank: u16 = 0;
         while (rank < (1 << 13)) : (rank += 1) {
             if (@popCount(rank) == 5) {
-                if (!self.flush_lookup.contains(rank)) {
-                    try self.flush_lookup.put(rank, rank);
+                if (self.flush_table[rank] == 0) {
+                    self.flush_table[rank] = rank;
                 }
             }
         }
 
+        // Quads
         for (0..13) |q| {
             for (0..13) |k| {
                 if (q == k) continue;
                 const prod = primes[q] * primes[q] * primes[q] * primes[q] * primes[k];
                 const val = (FOUR_OF_A_KIND_BASE << 26) | (@as(u32, @intCast(q)) << 13) | @as(u32, @intCast(k));
-                try self.unsuited_lookup.put(prod, val);
+                self.addUnsuited(prod, val);
             }
         }
 
+        // Full House
         for (0..13) |t| {
             for (0..13) |p| {
                 if (t == p) continue;
                 const prod = primes[t] * primes[t] * primes[t] * primes[p] * primes[p];
                 const val = (FULL_HOUSE_BASE << 26) | (@as(u32, @intCast(t)) << 13) | @as(u32, @intCast(p));
-                try self.unsuited_lookup.put(prod, val);
+                self.addUnsuited(prod, val);
             }
         }
 
+        // Trips
         for (0..13) |t| {
             for (0..13) |k1| {
                 if (k1 == t) continue;
@@ -190,11 +214,12 @@ pub const Evaluator = struct {
                         k_val = (@as(u32, @intCast(k2)) << 4) | @as(u32, @intCast(k1));
                     }
                     const val = (TRIPS_BASE << 26) | (@as(u32, @intCast(t)) << 13) | k_val;
-                    try self.unsuited_lookup.put(prod, val);
+                    self.addUnsuited(prod, val);
                 }
             }
         }
 
+        // Two Pair
         for (0..13) |p1| {
             for (0..13) |p2| {
                 if (p1 == p2) continue;
@@ -208,11 +233,12 @@ pub const Evaluator = struct {
                         pair_val = (@as(u32, @intCast(p2)) << 13) | (@as(u32, @intCast(p1)) << 9);
                     }
                     const val = (TWO_PAIR_BASE << 26) | pair_val | @as(u32, @intCast(k));
-                    try self.unsuited_lookup.put(prod, val);
+                    self.addUnsuited(prod, val);
                 }
             }
         }
 
+        // Pair
         for (0..13) |p| {
             for (0..13) |k1| {
                 if (k1 == p) continue;
@@ -221,19 +247,18 @@ pub const Evaluator = struct {
                     for (0..13) |k3| {
                         if (k3 == p or k3 == k1 or k3 == k2) continue;
                         const prod = primes[p] * primes[p] * primes[k1] * primes[k2] * primes[k3];
-
                         var k_mask: u32 = 0;
                         k_mask |= @as(u32, 1) << @intCast(k1);
                         k_mask |= @as(u32, 1) << @intCast(k2);
                         k_mask |= @as(u32, 1) << @intCast(k3);
-
                         const val = (PAIR_BASE << 26) | (@as(u32, @intCast(p)) << 13) | k_mask;
-                        try self.unsuited_lookup.put(prod, val);
+                        self.addUnsuited(prod, val);
                     }
                 }
             }
         }
 
+        // High Card
         var i: u8 = 0;
         while (i < 13) : (i += 1) {
             var j: u8 = i + 1;
@@ -246,15 +271,13 @@ pub const Evaluator = struct {
                         while (m < 13) : (m += 1) {
                             if (!isStraight(i, j, k, l, m)) {
                                 const prod = primes[i] * primes[j] * primes[k] * primes[l] * primes[m];
-
                                 var val: u32 = 0;
                                 val |= @as(u32, 1) << @intCast(i);
                                 val |= @as(u32, 1) << @intCast(j);
                                 val |= @as(u32, 1) << @intCast(k);
                                 val |= @as(u32, 1) << @intCast(l);
                                 val |= @as(u32, 1) << @intCast(m);
-
-                                try self.unsuited_lookup.put(prod, (HIGH_CARD_BASE << 26) | val);
+                                self.addUnsuited(prod, (HIGH_CARD_BASE << 26) | val);
                             }
                         }
                     }
@@ -269,7 +292,6 @@ pub const Evaluator = struct {
         return false;
     }
 };
-
 test "Poker Hand Correctness" {
     const allocator = std.testing.allocator;
     var eval = try Evaluator.init(allocator);

@@ -1,44 +1,54 @@
-# Poker Hand Evaluator (Zig)
+# Zig Poker Hand Evaluator
 
-A fast and efficient poker hand evaluator written in Zig that uses lookup tables and prime number encoding for optimal performance.
+A high-performance poker hand evaluator written in Zig, optimized for maximum throughput using prime number encoding and direct memory lookups.
 
 ## Overview
 
-This evaluator can determine the strength of poker hands using a combination of prime number products and bit manipulation. It evaluates all standard poker hands from high card to straight flush and can handle both 5-card and 7-card hands (like Texas Hold'em).
+This evaluator is designed for heavy-duty poker analysis (solvers, equity calculators, and simulations). It determines the exact strength of poker hands using a combination of prime number products and bit manipulation.
+
+It supports **7-card evaluation** (Texas Hold'em style) out of the box, automatically finding the best 5-card combination among the 21 possible permutations.
+
+## 🚀 Performance
+
+This library trades memory for raw speed. By allocating large direct-access tables (\~420MB), it avoids hashing overhead entirely, achieving state-of-the-art evaluation speeds on consumer hardware.
+
+**Benchmark Results (7-Card Evaluation):**
+
+| Metric | Result |
+|:---|:---|
+| **Throughput** | **\~15.1 Million hands/sec** |
+| **Latency** | \~66 nanoseconds per hand |
+| **Thread** | Single-threaded |
+
+**Test Environment:**
+
+  * **Device:** Laptop 13 (Framework)
+  * **CPU:** AMD Ryzen 7 7840U (Zen 4) @ 3.30 GHz
+  * **RAM:** 16 GB LPDDR5
+  * **Build Mode:** `ReleaseFast`
 
 ## Features
 
-- **Fast Evaluation**: Uses pre-computed lookup tables for O(1) hand evaluation
-- **7-Card Support**: Automatically evaluates all 21 possible 5-card combinations from 7 cards
-- **Complete Hand Rankings**: Supports all standard poker hands:
-  - High Card
-  - One Pair
-  - Two Pair
-  - Three of a Kind (Trips)
-  - Straight
-  - Flush
-  - Full House
-  - Four of a Kind (Quads)
-  - Straight Flush
+  - **True O(1) Lookup**: Uses direct array indexing for instant hand evaluation. No hash collisions, no binary search.
+  - **7-Card Native**: Optimized specifically for Texas Hold'em evaluation (7 choose 5).
+  - **Complete Hand Rankings**: Supports all standard poker hands from High Card to Royal Flush.
+  - **Tie-Breaker Accuracy**: Distinction between hands of the same rank (e.g., King-High Flush vs. Queen-High Flush).
 
 ## How It Works
 
-### Prime Number Encoding
+### 1\. Prime Number Encoding
 
-Each card rank is assigned a unique prime number. The product of five cards' prime numbers uniquely identifies most hand patterns (pairs, trips, quads, full houses, two pair).
+Each card rank is assigned a unique prime number (Two=2, ..., Ace=41). The product of five cards' prime numbers uniquely identifies rank-based hands (Pairs, Trips, Full Houses) regardless of suit.
 
-### Bit Manipulation
+### 2\. Direct Memory Lookup ("The Nuclear Option")
 
-- Cards are encoded with suit information in bits 12-15
-- Rank information in bits 8-11
-- Prime number value in bits 0-7
+Instead of using HashMaps (which incur hashing overhead) or Binary Search (which incurs branching overhead), this evaluator allocates a flat array of \~105 million integers (\~420MB RAM). The prime product of a hand is used as the **direct index** into this array to fetch the hand strength instantly.
 
-### Evaluation Strategy
+### 3\. Evaluation Strategy
 
-1. **Flush Detection**: Check if all 5 cards share a suit using bitwise AND
-2. **Straight/Straight Flush**: Use bit masks for rank patterns
-3. **Made Hands**: Use prime products to look up pairs, trips, quads, and full houses
-4. **High Card**: Fall back to bit rank representation
+1.  **Flush Check**: Bitwise operations check if 5+ cards share a suit. If so, a 65KB lookup table determines the strength.
+2.  **Straight Check**: Bitmasks check for sequential rank patterns.
+3.  **Rainbow/Unsuited**: If no flush or straight is found, the prime product of the cards is calculated and used to index the main 420MB lookup table.
 
 ## Usage
 
@@ -52,11 +62,12 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Initialize evaluator (builds lookup tables)
+    // Initialize evaluator.
+    // WARNING: Allocates ~420MB of RAM for lookup tables.
     var evaluator = try Evaluator.init(allocator);
     defer evaluator.deinit();
 
-    // Evaluate a 7-card hand (e.g., Texas Hold'em)
+    // Evaluate a 7-card hand
     const hand = [7]u32{
         Card.encode(.Ace, .Spades),
         Card.encode(.King, .Spades),
@@ -69,44 +80,45 @@ pub fn main() !void {
     
     const strength = evaluator.handStrength(hand);
     
-    // Higher values are better hands
+    // Higher values = better hands
     std.debug.print("Hand strength: {}\n", .{strength});
 }
 ```
 
-## API
+## Build & Run
 
-### `Evaluator.init(allocator: std.mem.Allocator)`
-Initializes the evaluator and generates lookup tables. Must be called before evaluation.
+* To achieve the stated performance metrics, you **must** build with optimizations enabled. Debug builds include safety checks that significantly slow down bitwise operations.
 
-### `Evaluator.deinit()`
-Cleans up allocated memory.
+* I also have two bash scripts `rundebug.sh` and `runrelease.sh` that will build and run program in release or debug for you or you can compile in the standard way with zig build by doing the following:
 
-### `evaluator.handStrength(cards: [7]u32) u32`
-Evaluates a 7-card hand by checking all 21 possible 5-card combinations.
-Returns the maximum hand strength value (higher = better).
+```bash
+# Run the benchmark/main example
+zig build run -Doptimize=ReleaseFast
 
-### `evaluator.eval(c1, c2, c3, c4, c5: u32) u32`
-Evaluates exactly 5 cards and returns the hand strength value.
+# Run the test suite
+zig build test
+```
+
+## API Reference
+
+### `Evaluator.init(allocator)`
+
+Allocates \~420MB for lookup tables and populates them. This takes a split second on modern CPUs but is memory intensive.
+
+### `evaluator.handStrength(cards: [7]u32)`
+
+The hot path. Calculates the strength of the best 5-card hand formed from the 7 input cards.
+
+  * **Input:** Array of 7 encoded integers.
+  * **Output:** `u32` representing absolute hand strength.
 
 ## Hand Strength Encoding
 
-The returned strength value is encoded as:
-- Bits 26-31: Hand type (0-8)
-- Bits 0-25: Tiebreaker information (varies by hand type)
+The returned `u32` strength is structured to allow direct integer comparison:
 
-This ensures that stronger hands always have higher values and proper tiebreaking within the same hand type.
-
-## Dependencies
-
-Requires a `card.zig` module that defines:
-- `Card.PRIMES`: Array of prime numbers for each rank
-- Card encoding functions
-
-## Performance
-
-The evaluator uses pre-computed lookup tables for constant-time evaluation of most hands. Initial table generation takes ~O(n³) time but only happens once during initialization.
+  - **Bits 26-31:** Hand Category (High Card=1 ... Straight Flush=9)
+  - **Bits 0-25:** Tiebreaker value (Specific to the hand category)
 
 ## License
 
-This project is MIT-licensed. Feel free to explore, modify, and build upon it.
+This project is MIT-licensed. Feel free to explore, modify, and use it in your own solvers.
