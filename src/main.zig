@@ -25,7 +25,7 @@ pub fn main() !void {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var eval = try Evaluator.init(allocator);
+    var eval = try Evaluator.init();
 
     const NUM_HANDS = 10_000_000;
     print("Generating {d} hands for benchmark...\n", .{NUM_HANDS});
@@ -61,5 +61,5 @@ pub fn main() !void {
     print("Speed: {d:.2} million hands/sec\n", .{hands_per_sec / 1_000_000.0});
     print("just printing this so that it doesn't remove loop: {d}\n", .{total_score});
     //printTableStats(unsuited: []u32, flush: []u32)
-    printTableStats(eval.unsuited_table, eval.flush_table);
+    //printTableStats(eval.unsuited_table, eval.flush_table);
 }
