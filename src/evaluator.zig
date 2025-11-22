@@ -11,32 +11,24 @@ const FULL_HOUSE_BASE: u32 = 7;
 const FOUR_OF_A_KIND_BASE: u32 = 8;
 const STRAIGHT_FLUSH_BASE: u32 = 9;
 
-// Max prime product is 41^4 * 37 = 104,553,157 (Quads Aces w/ King kicker)
-// We round up to a safe buffer size.
-// MEMORY USAGE: ~105M * 4 bytes = ~420 MB
 const MAX_PRIME_PRODUCT = 105_000_000;
 
-// Max bitmask for ranks (13 bits) fits easily in u16 (65536)
 const MAX_FLUSH_KEY = 65536;
 
 pub const Evaluator = struct {
     const Self = @This();
     allocator: std.mem.Allocator,
 
-    // Replaced HashMaps with massive Direct Lookup Arrays
-    // 420MB for unsuited, 256KB for flushes.
     flush_table: []u32,
     unsuited_table: []u32,
 
     pub fn init(allocator: std.mem.Allocator) !Self {
         var self = Self{
             .allocator = allocator,
-            // Allocate the big buffers
             .flush_table = try allocator.alloc(u32, MAX_FLUSH_KEY),
             .unsuited_table = try allocator.alloc(u32, MAX_PRIME_PRODUCT),
         };
 
-        // Initialize with 0 (Invalid/Empty)
         @memset(self.flush_table, 0);
         @memset(self.unsuited_table, 0);
 
@@ -59,7 +51,6 @@ pub const Evaluator = struct {
             const r = (card >> 8) & 0xF;
             const s = (card >> 12) & 0xF;
 
-            // Map 1,2,4,8 to 0,1,2,3
             const s_idx: u32 = switch (s) {
                 1 => 0,
                 2 => 1,
@@ -74,27 +65,23 @@ pub const Evaluator = struct {
             suit_counts[s_idx] += 1;
         }
 
-        // 1. Check Flush
         inline for (suit_counts, 0..) |count, i| {
             if (count >= 5) {
                 var flush_bits = suit_ranks[i];
-                // Reduce to top 5 bits if we have 6 or 7 suited cards
                 while (@popCount(flush_bits) > 5) {
                     const lowest_bit = flush_bits & (~flush_bits +% 1);
                     flush_bits ^= lowest_bit;
                 }
 
-                // Direct Array Lookup
                 const val = self.flush_table[flush_bits];
                 if (val != 0) {
-                    if (val > STRAIGHT_BASE << 20) return val; // Straight flush
+                    if (val > STRAIGHT_BASE << 20) return val;
                     return (FLUSH_BASE << 26) | val;
                 }
                 return (FLUSH_BASE << 26) | flush_bits;
             }
         }
 
-        // 2. Check Straights
         const straights = [_]u16{
             0b1111100000000, 0b0111110000000, 0b0011111000000, 0b0001111100000,
             0b0000111110000, 0b0000011111000, 0b0000001111100, 0b0000000111110,
@@ -108,18 +95,10 @@ pub const Evaluator = struct {
             }
         }
 
-        // 3. High Card Fast Path
-        // If we have 7 distinct ranks and no straight/flush, best is High Card.
-        if (@popCount(ranks) == 7) {
-            // We can fall through to the loop safely.
-            // Optimizing this specific branch requires complex bit manipulation
-            // that isn't worth it given how fast the loop below is now.
-        }
+        if (@popCount(ranks) == 7) {}
 
-        // 4. Check Unsuited (Pairs, etc)
         var max_val: u32 = 0;
 
-        // Permutations of 5 cards out of 7
         const PERMS = [21][5]u8{
             .{ 0, 1, 2, 3, 4 }, .{ 0, 1, 2, 3, 5 }, .{ 0, 1, 2, 3, 6 },
             .{ 0, 1, 2, 4, 5 }, .{ 0, 1, 2, 4, 6 }, .{ 0, 1, 2, 5, 6 },
@@ -139,7 +118,6 @@ pub const Evaluator = struct {
 
             const prod = p0 * p1 * p2 * p3 * p4;
 
-            // DIRECT ARRAY LOOKUP (Zero Overhead)
             const val = self.unsuited_table[prod];
             if (val > max_val) max_val = val;
         }
@@ -148,7 +126,6 @@ pub const Evaluator = struct {
     }
 
     fn addUnsuited(self: *Self, prod: u32, val: u32) void {
-        // Safety check just in case
         if (prod >= self.unsuited_table.len) {
             std.debug.print("ERROR: Product {d} exceeds table size\n", .{prod});
             return;
@@ -180,7 +157,6 @@ pub const Evaluator = struct {
             }
         }
 
-        // Quads
         for (0..13) |q| {
             for (0..13) |k| {
                 if (q == k) continue;
@@ -190,7 +166,6 @@ pub const Evaluator = struct {
             }
         }
 
-        // Full House
         for (0..13) |t| {
             for (0..13) |p| {
                 if (t == p) continue;
@@ -200,7 +175,6 @@ pub const Evaluator = struct {
             }
         }
 
-        // Trips
         for (0..13) |t| {
             for (0..13) |k1| {
                 if (k1 == t) continue;
@@ -219,7 +193,6 @@ pub const Evaluator = struct {
             }
         }
 
-        // Two Pair
         for (0..13) |p1| {
             for (0..13) |p2| {
                 if (p1 == p2) continue;
@@ -238,7 +211,6 @@ pub const Evaluator = struct {
             }
         }
 
-        // Pair
         for (0..13) |p| {
             for (0..13) |k1| {
                 if (k1 == p) continue;
@@ -258,7 +230,6 @@ pub const Evaluator = struct {
             }
         }
 
-        // High Card
         var i: u8 = 0;
         while (i < 13) : (i += 1) {
             var j: u8 = i + 1;
@@ -297,29 +268,22 @@ test "Poker Hand Correctness" {
     var eval = try Evaluator.init(allocator);
     defer eval.deinit();
 
-    // 1. Royal Flush vs Straight Flush
-    // Royal: As Ks Qs Js Ts + garbage
     const royal = [_]u32{ Card.makeCard(12, 0), Card.makeCard(11, 0), Card.makeCard(10, 0), Card.makeCard(9, 0), Card.makeCard(8, 0), Card.makeCard(2, 1), Card.makeCard(3, 2) };
 
-    // StrFlush: 9s 8s 7s 6s 5s + garbage
     const s_flush = [_]u32{ Card.makeCard(9, 0), Card.makeCard(8, 0), Card.makeCard(7, 0), Card.makeCard(6, 0), Card.makeCard(5, 0), Card.makeCard(12, 1), Card.makeCard(12, 2) };
 
     try std.testing.expect(eval.handStrength(royal) > eval.handStrength(s_flush));
 
-    // 2. Quads vs Full House
     const quads = [_]u32{ Card.makeCard(5, 0), Card.makeCard(5, 1), Card.makeCard(5, 2), Card.makeCard(5, 3), Card.makeCard(12, 0), Card.makeCard(2, 0), Card.makeCard(3, 0) };
     const boat = [_]u32{ Card.makeCard(12, 0), Card.makeCard(12, 1), Card.makeCard(12, 2), Card.makeCard(11, 0), Card.makeCard(11, 1), Card.makeCard(2, 0), Card.makeCard(3, 0) };
 
     try std.testing.expect(eval.handStrength(quads) > eval.handStrength(boat));
 
-    // 3. The "Wheel" (A-2-3-4-5)
     const wheel = [_]u32{ Card.makeCard(12, 0), Card.makeCard(0, 1), Card.makeCard(1, 2), Card.makeCard(2, 3), Card.makeCard(3, 0), Card.makeCard(11, 1), Card.makeCard(11, 2) };
     const pair_aces = [_]u32{ Card.makeCard(12, 0), Card.makeCard(12, 1), Card.makeCard(8, 2), Card.makeCard(7, 3), Card.makeCard(4, 0), Card.makeCard(2, 1), Card.makeCard(2, 2) };
 
     try std.testing.expect(eval.handStrength(wheel) > eval.handStrength(pair_aces));
 
-    // 4. Kicker Test (Equal Two Pair)
-    // Board: K K 8 8 4
     const board = [_]u32{ Card.makeCard(11, 0), Card.makeCard(11, 1), Card.makeCard(6, 2), Card.makeCard(6, 3), Card.makeCard(2, 0) };
 
     var p1_hand: [7]u32 = undefined;
