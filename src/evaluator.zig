@@ -1,15 +1,15 @@
 const std = @import("std");
 const Card = @import("card.zig");
 
-const HIGH_CARD_BASE = 1;
-const PAIR_BASE = 2;
-const TWO_PAIR_BASE = 3;
-const TRIPS_BASE = 4;
-const STRAIGHT_BASE = 5;
-const FLUSH_BASE = 6;
-const FULL_HOUSE_BASE = 7;
-const QUADS_BASE = 8;
-const STRAIGHT_FLUSH_BASE = 9;
+const HIGH_CARD_BASE: u32 = 1;
+const PAIR_BASE: u32 = 2;
+const TWO_PAIR_BASE: u32 = 3;
+const TRIPS_BASE: u32 = 4;
+const STRAIGHT_BASE: u32 = 5;
+const FLUSH_BASE: u32 = 6;
+const FULL_HOUSE_BASE: u32 = 7;
+const FOUR_OF_A_KIND_BASE: u32 = 8;
+const STRAIGHT_FLUSH_BASE: u32 = 9;
 
 pub const Evaluator = struct {
     const Self = @This();
@@ -45,7 +45,7 @@ pub const Evaluator = struct {
             const r = (card >> 8) & 0xF;
             const s = (card >> 12) & 0xF;
 
-            const s_idx = switch (s) {
+            const s_idx: u32 = switch (s) {
                 1 => 0,
                 2 => 1,
                 4 => 2,
@@ -69,7 +69,7 @@ pub const Evaluator = struct {
 
                 if (self.flush_lookup.get(flush_bits)) |val| {
                     if (val > STRAIGHT_BASE << 20) {
-                        return val; // Straight Flush
+                        return val;
                     }
                     return (FLUSH_BASE << 26) | val;
                 }
@@ -77,8 +77,24 @@ pub const Evaluator = struct {
             }
         }
 
-        if (self.flush_lookup.get(ranks)) |val| {
-            return (STRAIGHT_BASE << 26) | val;
+        const straights = [_]u16{
+            0b1111100000000,
+            0b0111110000000,
+            0b0011111000000,
+            0b0001111100000,
+            0b0000111110000,
+            0b0000011111000,
+            0b0000001111100,
+            0b0000000111110,
+            0b0000000011111,
+            0b1000000001111,
+        };
+
+        for (straights, 0..) |mask, i| {
+            if ((ranks & mask) == mask) {
+                const val = @as(u32, @intCast(10 - i));
+                return (STRAIGHT_BASE << 26) | val;
+            }
         }
 
         var max_val: u32 = 0;
@@ -114,7 +130,7 @@ pub const Evaluator = struct {
         const primes = Card.PRIMES;
 
         const straights = [_][5]u8{
-            .{ 12, 0, 1, 2, 3 }, // 5-high
+            .{ 12, 0, 1, 2, 3 },
             .{ 0, 1, 2, 3, 4 },
             .{ 1, 2, 3, 4, 5 },
             .{ 2, 3, 4, 5, 6 },
@@ -129,6 +145,7 @@ pub const Evaluator = struct {
         for (straights, 0..) |s, i| {
             var mask: u16 = 0;
             for (s) |r| mask |= @as(u16, 1) << @intCast(r);
+
             const val = @as(u32, @intCast(i)) + 1;
             try self.flush_lookup.put(mask, (STRAIGHT_FLUSH_BASE << 26) | val);
         }
@@ -137,20 +154,16 @@ pub const Evaluator = struct {
         while (rank < (1 << 13)) : (rank += 1) {
             if (@popCount(rank) == 5) {
                 if (!self.flush_lookup.contains(rank)) {
-                    const val = evaluateFlushRank(rank);
-                    try self.flush_lookup.put(rank, val);
+                    try self.flush_lookup.put(rank, rank);
                 }
             }
         }
-
-        try self.generateUnsuitedImpl(QUADS_BASE, 4, 1);
-        try self.generateUnsuitedImpl(FULL_HOUSE_BASE, 3, 2);
 
         for (0..13) |q| {
             for (0..13) |k| {
                 if (q == k) continue;
                 const prod = primes[q] * primes[q] * primes[q] * primes[q] * primes[k];
-                const val = (QUADS_BASE << 26) | (@as(u32, @intCast(q)) << 13) | @as(u32, @intCast(k));
+                const val = (FOUR_OF_A_KIND_BASE << 26) | (@as(u32, @intCast(q)) << 13) | @as(u32, @intCast(k));
                 try self.unsuited_lookup.put(prod, val);
             }
         }
@@ -170,7 +183,13 @@ pub const Evaluator = struct {
                 for (0..13) |k2| {
                     if (k2 == t or k2 == k1) continue;
                     const prod = primes[t] * primes[t] * primes[t] * primes[k1] * primes[k2];
-                    const val = (TRIPS_BASE << 26) | (@as(u32, @intCast(t)) << 13);
+                    var k_val: u32 = 0;
+                    if (k1 > k2) {
+                        k_val = (@as(u32, @intCast(k1)) << 4) | @as(u32, @intCast(k2));
+                    } else {
+                        k_val = (@as(u32, @intCast(k2)) << 4) | @as(u32, @intCast(k1));
+                    }
+                    const val = (TRIPS_BASE << 26) | (@as(u32, @intCast(t)) << 13) | k_val;
                     try self.unsuited_lookup.put(prod, val);
                 }
             }
@@ -182,7 +201,13 @@ pub const Evaluator = struct {
                 for (0..13) |k| {
                     if (k == p1 or k == p2) continue;
                     const prod = primes[p1] * primes[p1] * primes[p2] * primes[p2] * primes[k];
-                    const val = (TWO_PAIR_BASE << 26) | (@as(u32, @intCast(p1)) << 13);
+                    var pair_val: u32 = 0;
+                    if (p1 > p2) {
+                        pair_val = (@as(u32, @intCast(p1)) << 13) | (@as(u32, @intCast(p2)) << 9);
+                    } else {
+                        pair_val = (@as(u32, @intCast(p2)) << 13) | (@as(u32, @intCast(p1)) << 9);
+                    }
+                    const val = (TWO_PAIR_BASE << 26) | pair_val | @as(u32, @intCast(k));
                     try self.unsuited_lookup.put(prod, val);
                 }
             }
@@ -196,7 +221,13 @@ pub const Evaluator = struct {
                     for (0..13) |k3| {
                         if (k3 == p or k3 == k1 or k3 == k2) continue;
                         const prod = primes[p] * primes[p] * primes[k1] * primes[k2] * primes[k3];
-                        const val = (PAIR_BASE << 26) | (@as(u32, @intCast(p)) << 13);
+
+                        var k_mask: u32 = 0;
+                        k_mask |= @as(u32, 1) << @intCast(k1);
+                        k_mask |= @as(u32, 1) << @intCast(k2);
+                        k_mask |= @as(u32, 1) << @intCast(k3);
+
+                        const val = (PAIR_BASE << 26) | (@as(u32, @intCast(p)) << 13) | k_mask;
                         try self.unsuited_lookup.put(prod, val);
                     }
                 }
@@ -215,8 +246,15 @@ pub const Evaluator = struct {
                         while (m < 13) : (m += 1) {
                             if (!isStraight(i, j, k, l, m)) {
                                 const prod = primes[i] * primes[j] * primes[k] * primes[l] * primes[m];
-                                const val = (HIGH_CARD_BASE << 26) | calculateHighCardVal(i, j, k, l, m);
-                                try self.unsuited_lookup.put(prod, val);
+
+                                var val: u32 = 0;
+                                val |= @as(u32, 1) << @intCast(i);
+                                val |= @as(u32, 1) << @intCast(j);
+                                val |= @as(u32, 1) << @intCast(k);
+                                val |= @as(u32, 1) << @intCast(l);
+                                val |= @as(u32, 1) << @intCast(m);
+
+                                try self.unsuited_lookup.put(prod, (HIGH_CARD_BASE << 26) | val);
                             }
                         }
                     }
@@ -230,26 +268,25 @@ pub const Evaluator = struct {
         if (m == 12 and i == 0 and j == 1 and k == 2 and l == 3) return true;
         return false;
     }
-
-    fn evaluateFlushRank(rank: u16) u32 {
-        return rank;
-    }
-
-    fn calculateHighCardVal(i: u8, j: u8, k: u8, l: u8, m: u8) u32 {
-        var val: u32 = 0;
-        val |= @as(u32, 1) << @intCast(i);
-        val |= @as(u32, 1) << @intCast(j);
-        val |= @as(u32, 1) << @intCast(k);
-        val |= @as(u32, 1) << @intCast(l);
-        val |= @as(u32, 1) << @intCast(m);
-        return val;
-    }
 };
 
-test "Make Evaluator" {
+test "Hand Eval init" {
     var da = std.heap.DebugAllocator(.{}){};
     const allocator = da.allocator();
+
     defer _ = da.deinit();
     var eval = try Evaluator.init(allocator);
     defer eval.deinit();
+}
+
+test "CAN EVAL" {
+    var da = std.heap.DebugAllocator(.{}){};
+    const allocator = da.allocator();
+
+    defer _ = da.deinit();
+    var eval = try Evaluator.init(allocator);
+    defer eval.deinit();
+    const deck = Card.makeDeck();
+    const hand: [7]u32 = .{ deck[0], deck[1], deck[2], deck[3], deck[4], deck[5], deck[6] };
+    _ = eval.handStrength(hand);
 }
